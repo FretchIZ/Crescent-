@@ -2,6 +2,11 @@ import { db } from "@/lib/db";
 import { parseJson, isStringArray, isStringRecord } from "@/lib/utils";
 import { buildSearchText } from "@/lib/search-text";
 import type { ItemType } from "@/lib/constants";
+import { kvGet, kvSet } from "@/lib/kv";
+import { bumpCatalogVersion, getCatalogVersion } from "@/lib/catalog-version";
+import { revalidateCatalogTag } from "@/lib/revalidate";
+import { clearCachedSearch } from "@/lib/search-cache";
+import { prepareRankingVectors } from "@/lib/ai/rank";
 
 export { buildSearchText };
 
@@ -41,6 +46,8 @@ export type CatalogItem = {
 export type RankedItem = CatalogItem & {
   searchText: string;
   embedding: number[] | null;
+  /** Precomputed at catalog snapshot build time; serialized as [token, weight][]. */
+  lexicalVector?: Array<[string, number]>;
   matchScore: number;
   matchReasons: string[];
   explanation: string;
@@ -269,13 +276,69 @@ function toService(row: ServiceRow): RankedItem {
   };
 }
 
-/** Load every active catalog item. Small catalogs are ranked in memory; see README for scale-up path. */
-export async function loadCatalog(): Promise<RankedItem[]> {
+export { getCatalogVersion };
+const SNAPSHOT_TTL_MS = 15_000; // in-memory TTL (5–30 s target)
+const SNAPSHOT_KV_TTL_SEC = 120; // distributed copy; version bump invalidates sooner
+
+type Snapshot = { version: string; items: RankedItem[]; expiresAt: number };
+let memorySnapshot: Snapshot | null = null;
+let snapshotClock: () => number = Date.now;
+
+/** Test-only hook for deterministic TTL checks. */
+export function __setCatalogClockForTests(fn: () => number): void {
+  snapshotClock = fn;
+}
+
+/** Authoritative read — used only on a snapshot miss. */
+export async function fetchCatalogFromDb(): Promise<RankedItem[]> {
   const [products, services] = await Promise.all([
     db.product.findMany({ where: { isActive: true }, select: productSelect }),
     db.service.findMany({ where: { isActive: true }, select: serviceSelect }),
   ]);
-  return [...products.map(toProduct), ...services.map(toService)];
+  return prepareRankingVectors([...products.map(toProduct), ...services.map(toService)]);
+}
+
+function reviveSnapshot(json: string): RankedItem[] {
+  const items = JSON.parse(json) as RankedItem[];
+  return items.map((item) => ({
+    ...item,
+    createdAt: new Date(item.createdAt),
+    nextAvailableAt: item.nextAvailableAt ? new Date(item.nextAvailableAt) : item.nextAvailableAt,
+  }));
+}
+
+/**
+ * Warm reads return a module-level snapshot (sub-millisecond ranking). Cold or
+ * stale reads hydrate from KV once, then from Postgres, and precompute lexical
+ * vectors a single time per snapshot.
+ */
+export async function loadCatalog(): Promise<RankedItem[]> {
+  const version = await getCatalogVersion();
+  const now = snapshotClock();
+  if (memorySnapshot && memorySnapshot.version === version && memorySnapshot.expiresAt > now) {
+    return memorySnapshot.items;
+  }
+
+  const key = `catalog:snapshot:${version}`;
+  const cached = await kvGet(key);
+  if (cached) {
+    const items = reviveSnapshot(cached);
+    memorySnapshot = { version, items, expiresAt: now + SNAPSHOT_TTL_MS };
+    return items;
+  }
+
+  const items = await fetchCatalogFromDb();
+  await kvSet(key, JSON.stringify(items), SNAPSHOT_KV_TTL_SEC);
+  memorySnapshot = { version, items, expiresAt: snapshotClock() + SNAPSHOT_TTL_MS };
+  return items;
+}
+
+/** Call after any catalog/category/seller write (admin, feed ingest, seed). */
+export async function invalidateCatalog(): Promise<void> {
+  await bumpCatalogVersion();
+  memorySnapshot = null;
+  clearCachedSearch();
+  await revalidateCatalogTag();
 }
 
 export type CatalogFilters = {

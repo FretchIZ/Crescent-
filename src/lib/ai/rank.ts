@@ -7,6 +7,20 @@ import {
 } from "@/lib/ai/embeddings";
 import { stem, tokenize } from "@/lib/ai/synonyms";
 
+/** Serializable sparse vector attached to catalog snapshots at ingest time. */
+export type SerializedVector = Array<[string, number]>;
+
+/**
+ * Precompute lexical vectors once per catalog snapshot instead of rebuilding
+ * them for every item on every search request.
+ */
+export function prepareRankingVectors(items: RankedItem[]): RankedItem[] {
+  return items.map((item) => ({
+    ...item,
+    lexicalVector: [...buildLexicalVector(item.searchText || haystack(item))] as SerializedVector,
+  }));
+}
+
 /**
  * Relevance ranking.
  *
@@ -108,9 +122,10 @@ function scoreItem(
       cosineDense(options.openAIQueryEmbedding, item.embedding) * MAX.text
     );
   } else if (queryVector) {
-    textPoints = Math.round(
-      cosineLexical(queryVector, buildLexicalVector(item.searchText || text)) * MAX.text
-    );
+    const itemVector = item.lexicalVector
+      ? new Map(item.lexicalVector)
+      : buildLexicalVector(item.searchText || text);
+    textPoints = Math.round(cosineLexical(queryVector, itemVector) * MAX.text);
   }
   const tokens = matchedTokens(intent, item);
   if (tokens.length > 0) {

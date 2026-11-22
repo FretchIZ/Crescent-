@@ -54,7 +54,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the dev server |
-| `npm run build` | Prisma generate + production build |
+| `npm run build` | Prisma generate (SQLite) + production build |
+| `npm run build:vercel` | Prisma generate (PostgreSQL schema) + production build |
 | `npm start` | Serve the production build |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Vitest |
@@ -74,7 +75,8 @@ All endpoints live under `/api` and share a JSON envelope:
 
 | Area | Endpoints |
 | --- | --- |
-| Auth | `POST /api/auth/register`, `/login`, `/logout`, `/forgot-password`, `/reset-password`, `/verify-email`; `GET /api/auth/me` |
+| Auth | `POST /api/auth/register`, `/login`, `/logout`, `/forgot-password`, `/reset-password`, `/verify-email`, `/resend-verification`; `GET /api/auth/me` |
+| Health | `GET /api/health`, `GET /health` |
 | Catalog | `GET /api/items`, `GET /api/items/[type]/[id]` |
 | Search | `POST /api/search` |
 | Discovery | `GET /api/recommendations` |
@@ -85,22 +87,57 @@ All endpoints live under `/api` and share a JSON envelope:
 
 ## Configuration
 
-See `.env.example`. Everything except `DATABASE_URL` and `SESSION_SECRET` is optional:
+See `.env.example`. Locally, only `DATABASE_URL` is required; in production,
+`DATABASE_URL`, `DIRECT_URL`, `SESSION_SECRET` and Redis/KV credentials are required:
 
 - `OPENAI_API_KEY` — enables embeddings for semantic ranking; without it the built-in local engine is used.
 - `RESEND_API_KEY` — enables transactional email; without it, verification/reset links are logged in development.
 
-## Deployment
+## Deployment (Vercel)
 
-The schema is portable to PostgreSQL:
+The local schema uses SQLite; Vercel uses a dedicated PostgreSQL schema so the
+provider is never guessed at build time.
 
-1. Provision PostgreSQL and set `DATABASE_URL`.
-2. Change `datasource db { provider = "sqlite" }` to `"postgresql"` in `prisma/schema.prisma`.
-3. Run `npx prisma migrate deploy` (or `db push` for a first deploy) and seed if desired.
-4. Set `APP_URL` to the public URL and a strong `SESSION_SECRET`.
-5. Deploy on Vercel (or any Node host) with `npm run build` / `npm start`.
+1. Import `FretchIZ/Crescent-` into Vercel. Framework: **Next.js**, build command
+   `npm run build:vercel` (set in `vercel.json`), install command `npm ci`.
+2. Provision PostgreSQL and Redis/KV, then set these **Environment Variables**
+   for Production (and Preview if needed):
+   - `DATABASE_URL` — **pooled** PostgreSQL URL (PgBouncer/Supavisor/Accelerate,
+     `?pgbouncer=true`, `sslmode=require`) used by the application.
+   - `DIRECT_URL` — direct (non-pooled) PostgreSQL URL, used only by migrations.
+   - `SESSION_SECRET` — 32+ random characters (`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`); also signs derived email tokens.
+   - `APP_URL` — the public deployment URL (used in emailed verification/reset links).
+   - `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` (or the `KV_REST_API_*`
+     aliases) — distributed rate limits, session cache/revocation, catalog and
+     search snapshots. **Required in production.**
+   - Optional: `OPENAI_API_KEY`, `RESEND_API_KEY`, `EMAIL_FROM`.
+3. Create the production tables once: `npm run db:push:production` with the same
+   `DATABASE_URL`/`DIRECT_URL`. Seeding the demo catalog is optional.
+4. Deploy. Vercel Web Analytics and Speed Insights are wired in via the
+   `@vercel/analytics` / `@vercel/speed-insights` App Router components.
 
-Note: the in-memory rate limiter is per-instance; use a shared store (e.g. Redis) for multi-instance deployments.
+Health probes are available at `GET /api/health` and `GET /health`. They return
+`200` when Postgres **and** Redis/KV are reachable and `503` when degraded,
+with a 3-second dependency timeout. `VERCEL_GIT_COMMIT_SHA` is reported as the
+version. Without KV credentials, `/health` is intentionally degraded in
+production (the process-local fallback is only for dev/test).
+
+API requests are logged with method, redacted route, status and latency; page
+requests are logged at the edge. Logs never contain credentials, cookies,
+headers, query values or raw IPs. Rate-limit keys hash IPs.
+
+### Read-path performance
+
+- `loadCatalog()` serves warm searches from a 15-second in-process snapshot
+  (backed by a versioned KV document), with lexical vectors precomputed once.
+- Anonymous `GET /api/search?q=...` is CDN-cacheable (`s-maxage=30`,
+  `stale-while-revalidate=120`) and writes no history/personalization rows.
+- Catalog/admin/feed writes must call `invalidateCatalog()`; the seed script
+  already does so. This bumps the KV version key and calls `revalidateTag`.
+- Bookings accept an `Idempotency-Key` header; email tokens are deterministic
+  per user/purpose and upserted, so concurrent requests cannot double-write.
+
+See `docs/SCALING.md` for the pgvector/HNSW and ISR/Edge migration paths.
 
 ## Repository hygiene
 

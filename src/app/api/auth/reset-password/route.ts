@@ -1,13 +1,13 @@
 import { apiHandler, clientIp, jsonOk, readJson, ApiError } from "@/lib/api";
 import { db } from "@/lib/db";
 import { resetPasswordSchema } from "@/lib/validation";
-import { sha256 } from "@/lib/auth/session";
+import { revokeAllSessions, sha256 } from "@/lib/auth/session";
 import { hashPassword } from "@/lib/auth/password";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, hashRateKey } from "@/lib/rate-limit";
 import { audit } from "@/lib/audit";
 
 export const POST = apiHandler(async (request) => {
-  enforceRateLimit(`reset:${clientIp(request)}`, 10, 15 * 60 * 1000);
+  await enforceRateLimit(`reset:${hashRateKey(clientIp(request) ?? "unknown")}`, 10, 15 * 60 * 1000);
   const body = await readJson(request, resetPasswordSchema);
 
   const record = await db.passwordResetToken.findUnique({
@@ -23,8 +23,8 @@ export const POST = apiHandler(async (request) => {
   await db.$transaction([
     db.user.update({ where: { id: record.userId }, data: { passwordHash } }),
     db.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
-    db.session.deleteMany({ where: { userId: record.userId } }),
   ]);
+  await revokeAllSessions(record.userId);
 
   await audit({ actorId: record.userId, action: "auth.password_reset", request });
   return jsonOk({ reset: true });

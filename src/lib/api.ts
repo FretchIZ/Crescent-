@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError, type ZodSchema } from "zod";
+import { isProduction } from "@/lib/env";
 
 /** Typed application error — surfaces as a structured JSON body, never a stack trace. */
 export class ApiError extends Error {
@@ -34,6 +35,13 @@ export function fail(
   );
 }
 
+/** Strip opaque IDs from paths so telemetry never carries user/customer identifiers. */
+export function redactRoute(pathname: string): string {
+  return pathname
+    .replace(/\/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "/:id")
+    .replace(/\/[A-Za-z0-9_-]{24,}/g, "/:id");
+}
+
 /**
  * Wrap a route handler with uniform error handling:
  * ApiError -> structured status; ZodError -> 400 VALIDATION_ERROR;
@@ -52,7 +60,25 @@ export function withErrorHandling<T extends unknown[]>(
       if (err instanceof ZodError) {
         return fail(400, "VALIDATION_ERROR", "Invalid request.", err.flatten());
       }
-      console.error("[api] unhandled error:", err);
+      const request = args[0];
+      const route =
+        request instanceof Request
+          ? redactRoute(new URL(request.url).pathname)
+          : "unknown";
+      if (isProduction) {
+        // Log the error class only — messages can contain PII or credentials.
+        console.error(
+          JSON.stringify({
+            level: "error",
+            msg: "api.unhandled_error",
+            route,
+            error: err instanceof Error ? err.name : "UnknownError",
+            timestamp: new Date().toISOString(),
+          })
+        );
+      } else {
+        console.error("[api] unhandled error:", err);
+      }
       return fail(500, "INTERNAL_ERROR", "Something went wrong. Please try again.");
     }
   };
@@ -99,11 +125,39 @@ export type RouteContext = { params: Promise<Record<string, string | string[]>> 
  *
  *   export const GET = apiHandler(async (request) => jsonOk({ ... }));
  *   export const GET = apiHandler(async (request, context) => { ... });
+ *
+ * Also logs method, route, status, and latency for every request (no PII).
  */
 export function apiHandler<C = RouteContext>(
   handler: (request: Request, context: C) => Promise<Response> | Response
 ): (request: Request, context: C) => Promise<Response> {
-  return withErrorHandling(async (request: Request, context: C) => handler(request, context));
+  const guarded = withErrorHandling(async (request: Request, context: C) => handler(request, context));
+
+  return async (request: Request, context: C): Promise<Response> => {
+    const started = Date.now();
+    let status = 500;
+    try {
+      const response = await guarded(request, context);
+      status = response.status;
+      return response;
+    } finally {
+      const latency = Date.now() - started;
+      const logEntry = {
+        level: status >= 500 ? "error" : "info",
+        msg: "api.request",
+        method: request.method,
+        route: redactRoute(new URL(request.url).pathname),
+        status,
+        latencyMs: latency,
+        timestamp: new Date().toISOString(),
+      };
+      if (isProduction) {
+        console.log(JSON.stringify(logEntry));
+      } else {
+        console.log(`[api] ${logEntry.method} ${logEntry.route} -> ${status} in ${latency}ms`);
+      }
+    }
+  };
 }
 
 /** Success envelope: `{ ok: true, data }`. */

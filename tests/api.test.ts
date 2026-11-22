@@ -545,4 +545,120 @@ describe("Bookings", () => {
     const json = await res.json();
     expect(json.data.booking.status).toBe("PENDING");
   });
+
+  test("deduplicates concurrent bookings with the same idempotency key", async () => {
+    const service = await db.service.findFirst({ where: { slug: "garden-consultation" } });
+    expect(service).not.toBeNull();
+    const key = `idem-${randomBytes(8).toString("hex")}`;
+    const tomorrow = new Date(Date.now() + 86400000).toISOString();
+    const { POST } = await import("@/app/api/bookings/route");
+    const request = () => {
+      const req = mockRequest("POST", "http://localhost/api/bookings", {
+        serviceId: service!.id,
+        preferredAt: tomorrow,
+      });
+      req.headers.set("idempotency-key", key);
+      return req;
+    };
+
+    const responses = await Promise.all([callHandler(POST, request()), callHandler(POST, request())]);
+    expect(responses.map((res) => res.status)).toEqual([201, 201]);
+    const [first, second] = await Promise.all(responses.map((res) => res.json()));
+    expect(second.data.booking.id).toBe(first.data.booking.id);
+    expect(await db.booking.count({ where: { idempotencyKey: key } })).toBe(1);
+  });
+});
+
+describe("Email verification", () => {
+  test("resends a verification token for an unverified account", async () => {
+    const { user } = await createAuthenticatedUser({
+      email: "unverified@example.com",
+      password: "SecurePass123!",
+      name: "Unverified User",
+    });
+    await db.user.update({ where: { id: user.id }, data: { emailVerified: false } });
+
+    const { POST } = await import("@/app/api/auth/resend-verification/route");
+    const res = await callHandler(
+      POST,
+      mockRequest("POST", "http://localhost/api/auth/resend-verification")
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.sent).toBe(true);
+    expect(await db.emailVerificationToken.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  test("requires a session to resend verification", async () => {
+    const { POST } = await import("@/app/api/auth/resend-verification/route");
+    const res = await callHandler(
+      POST,
+      mockRequest("POST", "http://localhost/api/auth/resend-verification")
+    );
+    expect(res.status).toBe(401);
+  });
+
+  test("concurrent token issuance converges on one active token", async () => {
+    const user = await db.user.create({
+      data: {
+        email: `tokens-${randomBytes(5).toString("hex")}@example.com`,
+        name: "Token User",
+        passwordHash: "unused",
+      },
+    });
+    const { issueEmailVerification, issuePasswordReset } = await import("@/lib/auth/tokens");
+    const recipient = { id: user.id, email: user.email, name: user.name };
+
+    const [verifyA, verifyB] = await Promise.all([
+      issueEmailVerification(recipient),
+      issueEmailVerification(recipient),
+    ]);
+    expect(verifyA.devLink).toBe(verifyB.devLink);
+    expect(await db.emailVerificationToken.count({ where: { userId: user.id } })).toBe(1);
+
+    const [resetA, resetB] = await Promise.all([
+      issuePasswordReset(recipient),
+      issuePasswordReset(recipient),
+    ]);
+    expect(resetA.devLink).toBe(resetB.devLink);
+    expect(await db.passwordResetToken.count({ where: { userId: user.id } })).toBe(1);
+  });
+
+  test("logout immediately revokes cached sessions", async () => {
+    const { user } = await createAuthenticatedUser({
+      email: "cache-logout@example.com",
+      password: "SecurePass123!",
+      name: "Cache Logout",
+    });
+    const { GET: getMe } = await import("@/app/api/auth/me/route");
+    const before = await callHandler(getMe, mockRequest("GET", "http://localhost/api/auth/me"));
+    expect((await before.json()).data.user.id).toBe(user.id);
+
+    const { POST } = await import("@/app/api/auth/logout/route");
+    const res = await callHandler(POST, mockRequest("POST", "http://localhost/api/auth/logout"));
+    expect(res.status).toBe(200);
+
+    const after = await callHandler(getMe, mockRequest("GET", "http://localhost/api/auth/me"));
+    expect((await after.json()).data.user).toBeNull();
+  });
+});
+
+describe("Admin stats", () => {
+  test("serves real catalog counts from the shared data function", async () => {
+    await createAuthenticatedUser({
+      email: "admin@example.com",
+      password: "SecurePass123!",
+      name: "Admin",
+      role: "ADMIN",
+    });
+
+    const { GET } = await import("@/app/api/admin/stats/route");
+    const res = await callHandler(GET, mockRequest("GET", "http://localhost/api/admin/stats"));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.totals.users).toBe(1);
+    expect(json.data.totals.products).toBeGreaterThan(0);
+    expect(Array.isArray(json.data.recentAudit)).toBe(true);
+    expect(Array.isArray(json.data.recentUsers)).toBe(true);
+  });
 });

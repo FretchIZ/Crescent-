@@ -2,12 +2,12 @@ import { apiHandler, jsonOk, readJson, ApiError, clientIp } from "@/lib/api";
 import { db } from "@/lib/db";
 import { reviewSchema } from "@/lib/validation";
 import { requireUser } from "@/lib/auth/session";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, hashRateKey } from "@/lib/rate-limit";
 import { audit } from "@/lib/audit";
 
 export const POST = apiHandler(async (request) => {
   const user = await requireUser();
-  enforceRateLimit(`review:${user.id}:${clientIp(request)}`, 5, 60 * 60 * 1000);
+  await enforceRateLimit(`review:${user.id}:${hashRateKey(clientIp(request) ?? "unknown")}`, 5, 60 * 60 * 1000);
   const body = await readJson(request, reviewSchema);
 
   const item =

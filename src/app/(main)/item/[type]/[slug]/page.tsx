@@ -1,16 +1,14 @@
-import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ItemDetailClient } from "@/components/item-detail-client";
 import { getCurrentUser } from "@/lib/auth/session";
-import { getItemBySlugOrId, type CatalogItem } from "@/lib/items";
-import { toPublicItem } from "@/lib/items";
+import { getItemBySlugOrId, toPublicItem } from "@/lib/items";
 
 function isItemType(value: string): value is "PRODUCT" | "SERVICE" {
   return value === "PRODUCT" || value === "SERVICE";
 }
 
 export const metadata = async ({ params }: { params: Promise<{ type: string; slug: string }> }) => {
-  const { type, slug } = await params;
+  const { slug } = await params;
   return {
     title: `${slug.replace(/-/g, " ")} · Brandmark`,
     description: `View details for ${slug.replace(/-/g, " ")} in the Brandmark catalog.`,

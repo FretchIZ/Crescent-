@@ -329,8 +329,6 @@ export const SELLER_SEED: SellerSeed[] = [
   },
 ];
 
-const u = (id: string) => `https://images.unsplash.com/photo-${id}?auto=format&fit=crop&w=1000&q=72`;
-
 export type ProductSeed = {
   slug: string;
   name: string;

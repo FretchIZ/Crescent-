@@ -192,13 +192,6 @@ const ATTRIBUTE_PATTERNS: Array<{ re: RegExp; name: string; value: string }> = [
   { re: /\b(great (?:for|with) (?:long|all[- ]day))\b/i, name: "Battery", value: "Long-lasting" },
 ];
 
-const FULFILMENT_WORDS: Record<string, string> = {
-  delivery: "Delivery", deliver: "Delivery", ship: "Delivery",
-  pickup: "Pickup", "pick up": "Pickup",
-  "on-site": "On-site", onsite: "On-site", "in person": "On-site", "in-person": "On-site",
-  online: "Online", virtual: "Online", remote: "Online",
-};
-
 // ---------------------------------------------------------------------------
 // Money parsing (whole pesos)
 // ---------------------------------------------------------------------------
@@ -640,7 +633,6 @@ const TYPE_PHRASES: Array<{ re: RegExp; itemType: SearchIntent["itemType"] }> = 
  */
 export function refineIntent(previous: SearchIntent, query: string): SearchIntent {
   const message = query.trim();
-  const lower = message.toLowerCase();
   const next = extractIntentLocal(message);
 
   if (FRESH_START.test(message)) {

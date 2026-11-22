@@ -3,16 +3,16 @@ import { db } from "@/lib/db";
 import { loginSchema } from "@/lib/validation";
 import { verifyPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, hashRateKey } from "@/lib/rate-limit";
 import { audit } from "@/lib/audit";
 import { sha256 } from "@/lib/auth/session";
 
 export const POST = apiHandler(async (request) => {
   const ip = clientIp(request);
-  enforceRateLimit(`login:${ip}`, 20, 15 * 60 * 1000);
+  await enforceRateLimit(`login:${hashRateKey(ip ?? "unknown")}`, 20, 15 * 60 * 1000);
 
   const body = await readJson(request, loginSchema);
-  enforceRateLimit(`login:email:${sha256(body.email).slice(0, 20)}`, 10, 15 * 60 * 1000);
+  await enforceRateLimit(`login:email:${sha256(body.email).slice(0, 20)}`, 10, 15 * 60 * 1000);
 
   const user = await db.user.findUnique({
     where: { email: body.email },

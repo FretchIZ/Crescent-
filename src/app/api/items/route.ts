@@ -15,8 +15,13 @@ export const GET = apiHandler(async (request) => {
     sort: parsed.sort as SortOption | undefined,
   });
 
-  return jsonOk({
-    ...result,
-    items: result.items.map((item) => toPublicItem(item, favorites.has(`${item.type}:${item.id}`))),
-  });
+  return jsonOk(
+    {
+      ...result,
+      items: result.items.map((item) => toPublicItem(item, favorites.has(`${item.type}:${item.id}`))),
+    },
+    user
+      ? { headers: { "Cache-Control": "private, no-store" } }
+      : { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } }
+  );
 });

@@ -1,0 +1,419 @@
+// Brandmark â€” database schema (Prisma)
+//
+// Design notes:
+// - Local development and CI use SQLite (zero-config, file-based). The schema
+//   is written to be portable: `prisma db push` works with SQLite and
+//   PostgreSQL. For production, point DATABASE_URL at a managed PostgreSQL
+//   instance and run `prisma migrate deploy` (see docs/DEPLOYMENT.md).
+// - Products and services are separate normalized tables sharing a category/
+//   seller graph. Search unifies them in memory (see src/lib/items.ts);
+//   the catalog is small enough for in-memory ranking today, with a documented
+//   scale-up path (pgvector + SQL-side prefiltering) in the README.
+// - Flexible attributes (tags, attributes, delivery options, searchText,
+//   embeddings) are JSON/text columns; core filters (price, rating,
+//   availability, category, seller, featured) are real indexed columns.
+// - Session tokens and verification/reset tokens are stored SHA-256 hashed,
+//   never in plaintext.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // Production schema: always pair with a managed PostgreSQL DATABASE_URL.
+  // Local development and tests use prisma/schema.prisma (SQLite).
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Pooled URL above (PgBouncer/Supavisor/Accelerate, pgbouncer=true);
+  // migrations use the direct connection below.
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & auth
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  name          String
+  role          String    @default("CUSTOMER") // CUSTOMER | ADMIN | SELLER
+  emailVerified Boolean   @default(false)
+  emailVerifiedAt DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  profile                 UserProfile?
+  seller                  Seller?
+  sessions                Session[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  interests               Interest[]
+  favorites               Favorite[]
+  recommendations         Recommendation[]
+  reviews                 Review[]
+  bookings                Booking[]
+  searchQueries           SearchQuery[]
+  searchSessions          SearchSession[]
+  auditLogs               AuditLog[]
+
+  @@index([role])
+}
+
+model UserProfile {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio                   String?
+  budgetMin             Int? // PHP, whole pesos
+  budgetMax             Int? // PHP, whole pesos
+  location              String?
+  locationConsent       Boolean  @default(false)
+  personalizationConsent Boolean @default(false)
+  avatarUrl             String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent  String?
+  ipHash     String?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Category {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  name        String
+  description String?
+  kind        String    @default("BOTH") // PRODUCT | SERVICE | BOTH
+  icon        String    @default("Tag")
+  sortOrder   Int       @default(0)
+  products    Product[]
+  services    Service[]
+  createdAt   DateTime  @default(now())
+}
+
+model Seller {
+  id          String    @id @default(cuid())
+  slug        String    @unique
+  name        String
+  description String?
+  location    String?
+  verified    Boolean   @default(false)
+  ratingAvg   Float     @default(0)
+  ratingCount Int       @default(0)
+  website     String?
+  userId      String?   @unique
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  products    Product[]
+  services    Service[]
+  createdAt   DateTime  @default(now())
+}
+
+model Product {
+  id               String    @id @default(cuid())
+  slug             String    @unique
+  name             String
+  summary          String?
+  description      String
+  priceCents       Int
+  currency         String    @default("PHP")
+  compareAtCents   Int?
+  brand            String?
+  categoryId       String
+  category         Category  @relation(fields: [categoryId], references: [id])
+  sellerId         String
+  seller           Seller    @relation(fields: [sellerId], references: [id])
+  imageUrl         String
+  images           String    @default("[]") // JSON string[]
+  attributes       String    @default("{}") // JSON Record<string, string>
+  tags             String    @default("[]") // JSON string[]
+  ratingAvg        Float     @default(0)
+  ratingCount      Int       @default(0)
+  availability     String    @default("IN_STOCK") // AVAILABILITY key
+  location         String?
+  deliveryOptions  String    @default("[]") // JSON string[] ("Delivery" | "Pickup")
+  verified         Boolean   @default(false) // provider-supplied vs platform copy
+  descriptionSource String   @default("PROVIDER") // PROVIDER | PLATFORM
+  sourceUrl        String?
+  isFeatured       Boolean   @default(false)
+  isActive         Boolean   @default(true)
+  searchText       String?
+  embedding        String? // JSON number[] â€” OpenAI embeddings when enabled
+  reviews          Review[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([categoryId])
+  @@index([sellerId])
+  @@index([priceCents])
+  @@index([ratingAvg])
+  @@index([isActive, isFeatured])
+}
+
+model Service {
+  id               String    @id @default(cuid())
+  slug             String    @unique
+  name             String
+  summary          String?
+  description      String
+  priceCents       Int
+  priceUnit        String? // e.g. "person", "hour"
+  currency         String    @default("PHP")
+  categoryId       String
+  category         Category  @relation(fields: [categoryId], references: [id])
+  sellerId         String
+  seller           Seller    @relation(fields: [sellerId], references: [id])
+  imageUrl         String
+  images           String    @default("[]") // JSON string[]
+  attributes       String    @default("{}") // JSON Record<string, string>
+  tags             String    @default("[]") // JSON string[]
+  ratingAvg        Float     @default(0)
+  ratingCount      Int       @default(0)
+  availability     String    @default("AVAILABLE") // AVAILABILITY key
+  location         String?
+  deliveryMode     String    @default("BOTH") // ONLINE | ONSITE | BOTH
+  durationMinutes  Int?
+  nextAvailableAt  DateTime?
+  verified         Boolean   @default(false)
+  descriptionSource String   @default("PROVIDER")
+  sourceUrl        String?
+  isFeatured       Boolean   @default(false)
+  isActive         Boolean   @default(true)
+  searchText       String?
+  embedding        String? // JSON number[]
+  reviews          Review[]
+  bookings         Booking[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([categoryId])
+  @@index([sellerId])
+  @@index([priceCents])
+  @@index([ratingAvg])
+  @@index([isActive, isFeatured])
+}
+
+// A customer's request to book a service. Status flow:
+// PENDING -> CONFIRMED -> COMPLETED, with CANCELLED reachable from either
+// PENDING or CONFIRMED. Ownership is derived through Service -> Seller -> User.
+model Booking {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceId   String
+  service     Service  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  status      String   @default("PENDING") // PENDING | CONFIRMED | CANCELLED | COMPLETED
+  preferredAt DateTime
+  notes       String?
+  // Client-supplied key makes concurrent booking retries idempotent.
+  idempotencyKey String? @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([serviceId, status])
+  @@index([status])
+}
+
+model Review {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId        String?
+  product          Product?  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  serviceId        String?
+  service          Service?  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  rating           Int
+  title            String?
+  body             String?
+  verifiedPurchase Boolean   @default(false) // only true when genuinely verified
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, productId])
+  @@unique([userId, serviceId])
+  @@index([productId])
+  @@index([serviceId])
+}
+
+// ---------------------------------------------------------------------------
+// Personalization
+// ---------------------------------------------------------------------------
+
+model Interest {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label     String
+  weight    Float    @default(0.5) // 0..1
+  source    String   @default("manual") // manual | inferred | search
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, label])
+  @@index([userId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemType  String // PRODUCT | SERVICE
+  itemId    String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, itemType, itemId])
+  @@index([userId, createdAt])
+}
+
+model Recommendation {
+  id        String    @id @default(cuid())
+  userId    String?
+  user      User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  itemType  String // PRODUCT | SERVICE
+  itemId    String
+  score     Float     @default(0)
+  reason    String?
+  source    String    @default("interests") // interests | search | trending
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, source])
+  @@index([userId, createdAt])
+}
+
+// Recently-viewed tracking keyed by signed-in user or anonymous visitor id.
+model ItemView {
+  id        String   @id @default(cuid())
+  viewerKey String // userId or visitor cookie id
+  userId    String?
+  itemType  String
+  itemId    String
+  viewedAt  DateTime @default(now())
+
+  @@unique([viewerKey, itemType, itemId])
+  @@index([viewerKey, viewedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Search & conversation history
+// ---------------------------------------------------------------------------
+
+model SearchSession {
+  id        String    @id @default(cuid())
+  userId    String?
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  visitorId String?
+  title     String    @default("New search")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  queries   SearchQuery[]
+  aiMessages AIMessage[]
+
+  @@index([userId, updatedAt])
+  @@index([visitorId])
+}
+
+model SearchQuery {
+  id         String        @id @default(cuid())
+  sessionId  String
+  session    SearchSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  queryText  String
+  intent     String        @default("{}") // JSON SearchIntent
+  resultCount Int          @default(0)
+  mode       String        @default("local") // local | openai
+  durationMs Int           @default(0)
+  createdAt  DateTime      @default(now())
+  results    SearchResult[]
+
+  @@index([userId, createdAt])
+  @@index([sessionId])
+}
+
+model SearchResult {
+  id            String      @id @default(cuid())
+  searchQueryId String
+  searchQuery   SearchQuery @relation(fields: [searchQueryId], references: [id], onDelete: Cascade)
+  itemType      String
+  itemId        String
+  rank          Int
+  score         Float       @default(0)
+  explanation   String      @default("")
+  createdAt     DateTime    @default(now())
+
+  @@index([searchQueryId])
+  @@index([itemId])
+}
+
+model AIMessage {
+  id        String       @id @default(cuid())
+  sessionId String
+  session   SearchSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String // user | assistant
+  content   String
+  intent    String? // JSON SearchIntent for user turns
+  createdAt DateTime     @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  actor      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String // e.g. auth.login, auth.register, favorite.add, search.query
+  entityType String? // e.g. "User", "Booking", "Review"
+  entityId   String?
+  metadata   String   @default("{}")
+  ipHash     String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+}

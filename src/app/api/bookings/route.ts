@@ -2,7 +2,7 @@ import { apiHandler, jsonOk, readJson, ApiError, clientIp } from "@/lib/api";
 import { db } from "@/lib/db";
 import { bookingSchema } from "@/lib/validation";
 import { requireUser } from "@/lib/auth/session";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, hashRateKey } from "@/lib/rate-limit";
 import { audit } from "@/lib/audit";
 
 export const GET = apiHandler(async () => {
@@ -50,7 +50,7 @@ export const GET = apiHandler(async () => {
 
 export const POST = apiHandler(async (request) => {
   const user = await requireUser();
-  enforceRateLimit(`booking:${user.id}:${clientIp(request)}`, 10, 60 * 60 * 1000);
+  await enforceRateLimit(`booking:${user.id}:${hashRateKey(clientIp(request) ?? "unknown")}`, 10, 60 * 60 * 1000);
   const body = await readJson(request, bookingSchema);
 
   const service = await db.service.findFirst({
@@ -62,16 +62,40 @@ export const POST = apiHandler(async (request) => {
     throw new ApiError(409, "This provider is not accepting bookings right now.", "unavailable");
   }
 
-  const booking = await db.booking.create({
-    data: {
-      userId: user.id,
-      serviceId: service.id,
-      preferredAt: body.preferredAt,
-      notes: body.notes?.trim() || null,
-      status: "PENDING",
-    },
-    select: { id: true, status: true, preferredAt: true },
-  });
+  const idempotencyKey =
+    request.headers.get("idempotency-key")?.trim() || body.idempotencyKey || undefined;
+
+  if (idempotencyKey) {
+    const existing = await db.booking.findUnique({
+      where: { idempotencyKey },
+      select: { id: true, status: true, preferredAt: true },
+    });
+    if (existing) {
+      return jsonOk({ booking: { ...existing, preferredAt: existing.preferredAt.toISOString() } });
+    }
+  }
+
+  const data = {
+    userId: user.id,
+    serviceId: service.id,
+    preferredAt: body.preferredAt,
+    notes: body.notes?.trim() || null,
+    status: "PENDING",
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  };
+  const select = { id: true, status: true, preferredAt: true } as const;
+
+  let booking: { id: string; status: string; preferredAt: Date };
+  try {
+    booking = await db.booking.create({ data, select });
+  } catch (error) {
+    // Two concurrent retries with the same key: the loser reads the winner.
+    const uniqueViolation = (error as { code?: string }).code === "P2002";
+    if (!idempotencyKey || !uniqueViolation) throw error;
+    const raced = await db.booking.findUnique({ where: { idempotencyKey }, select });
+    if (!raced) throw error;
+    booking = raced;
+  }
 
   await audit({ actorId: user.id, action: "booking.create", entityType: "Booking", entityId: booking.id, request });
   return jsonOk({ booking: { ...booking, preferredAt: booking.preferredAt.toISOString() } }, { status: 201 });

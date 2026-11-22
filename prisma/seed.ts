@@ -19,6 +19,7 @@ import {
   DEMO_CUSTOMER_NAMES,
 } from "../src/lib/catalog-data";
 import { buildSearchText } from "../src/lib/search-text";
+import { bumpCatalogVersion } from "../src/lib/catalog-version";
 
 // Load .env for `tsx` (Next.js loads it automatically, tsx does not).
 const envPath = resolve(process.cwd(), ".env");
@@ -102,7 +103,7 @@ async function main() {
   const sellerEmail = process.env.SEED_SELLER_EMAIL ?? "seller@brandmark.local";
   const sellerPassword = process.env.SEED_SELLER_PASSWORD ?? "SellerPass123!";
 
-  const admin = await db.user.upsert({
+  await db.user.upsert({
     where: { email: adminEmail },
     update: { role: "ADMIN", emailVerified: true, name: "Brandmark Admin" },
     create: {
@@ -468,6 +469,10 @@ async function main() {
       ],
     });
   }
+
+  // Catalog writes must invalidate warm snapshots; the version key is shared
+  // with every serverless instance when Redis/KV is configured.
+  await bumpCatalogVersion();
 
   const counts = await Promise.all([
     db.product.count(),

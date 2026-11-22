@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { favoriteSchema } from "@/lib/validation";
 import { requireUser } from "@/lib/auth/session";
 import { getItemBySlugOrId, toPublicItem } from "@/lib/items";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, hashRateKey } from "@/lib/rate-limit";
 import type { ItemType } from "@/lib/constants";
 
 export const GET = apiHandler(async () => {
@@ -26,7 +26,7 @@ export const GET = apiHandler(async () => {
 
 export const POST = apiHandler(async (request) => {
   const user = await requireUser();
-  enforceRateLimit(`favorite:${user.id}:${clientIp(request)}`, 60, 60 * 1000);
+  await enforceRateLimit(`favorite:${user.id}:${hashRateKey(clientIp(request) ?? "unknown")}`, 60, 60 * 1000);
   const body = await readJson(request, favoriteSchema);
 
   const item = await getItemBySlugOrId(body.itemType as ItemType, body.itemId);

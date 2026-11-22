@@ -38,6 +38,8 @@ export type SearchParams = {
   refine?: boolean;
   user?: SessionUser | null;
   visitorId?: string;
+  /** CDN-cacheable GET requests skip all history/personalization writes. */
+  persist?: boolean;
 };
 
 export type SearchFacets = {
@@ -431,20 +433,23 @@ export async function runSearch(params: SearchParams): Promise<SearchResponse> {
   });
 
   const mode: "local" | "openai" = intent.mode;
-  const persisted = await persistSearch({
-    sessionId: params.sessionId ?? null,
-    userId: user?.id,
-    visitorId: params.visitorId,
-    query,
-    intent,
-    items: filtered,
-    total,
-    mode,
-    durationMs: Date.now() - started,
-    agentReply,
-  });
+  const shouldPersist = params.persist !== false;
+  const persisted = shouldPersist
+    ? await persistSearch({
+        sessionId: params.sessionId ?? null,
+        userId: user?.id,
+        visitorId: params.visitorId,
+        query,
+        intent,
+        items: filtered,
+        total,
+        mode,
+        durationMs: Date.now() - started,
+        agentReply,
+      })
+    : { sessionId: params.sessionId ?? `cache-${query.length}-${intent.keywords.length}`, queryId: "cache" };
 
-  if (user) {
+  if (user && shouldPersist) {
     await updatePersonalization({ userId: user.id, consent, intent, items: filtered.slice(0, 12) });
   }
 

@@ -31,17 +31,22 @@ export const GET = apiHandler(async (request, context) => {
     getRelatedItems(item, 4),
   ]);
 
-  return jsonOk({
-    item: toPublicItem(item, favorites.has(`${item.type}:${item.id}`)),
-    reviews: reviews.map((review) => ({
-      id: review.id,
-      rating: review.rating,
-      title: review.title,
-      body: review.body,
-      verifiedPurchase: review.verifiedPurchase,
-      createdAt: review.createdAt.toISOString(),
-      author: review.user.name,
-    })),
-    related: related.map((entry) => toPublicItem(entry, favorites.has(`${entry.type}:${entry.id}`))),
-  });
+  return jsonOk(
+    {
+      item: toPublicItem(item, favorites.has(`${item.type}:${item.id}`)),
+      reviews: reviews.map((review) => ({
+        id: review.id,
+        rating: review.rating,
+        title: review.title,
+        body: review.body,
+        verifiedPurchase: review.verifiedPurchase,
+        createdAt: review.createdAt.toISOString(),
+        author: review.user.name,
+      })),
+      related: related.map((entry) => toPublicItem(entry, favorites.has(`${entry.type}:${entry.id}`))),
+    },
+    user
+      ? { headers: { "Cache-Control": "private, no-store" } }
+      : { headers: { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300" } }
+  );
 });

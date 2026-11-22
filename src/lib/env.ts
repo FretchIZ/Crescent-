@@ -8,8 +8,16 @@ import { z } from "zod";
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   DATABASE_URL: z.string().min(1, "DATABASE_URL is required"),
+  // Migrations use the direct (non-pooled) connection; the app uses the pooler.
+  DIRECT_URL: z.string().min(1).optional(),
   APP_URL: z.string().url().default("http://localhost:3000"),
   SESSION_SECRET: z.string().min(32).optional(),
+  // Upstash Redis or Vercel KV REST credentials. Without them the app uses a
+  // process-local fallback (single instance / dev / tests only).
+  UPSTASH_REDIS_REST_URL: z.string().url().optional(),
+  UPSTASH_REDIS_REST_TOKEN: z.string().min(1).optional(),
+  KV_REST_API_URL: z.string().url().optional(),
+  KV_REST_API_TOKEN: z.string().min(1).optional(),
   OPENAI_API_KEY: z.string().min(10).optional(),
   OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   OPENAI_EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),

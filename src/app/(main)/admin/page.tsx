@@ -1,21 +1,22 @@
 import type { Metadata } from "next";
 import { ChevronRight, ShieldCheck, Users } from "lucide-react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getCurrentUser } from "@/lib/auth/session";
+import { getAdminStats, type AdminStats } from "@/lib/admin";
 
 export const metadata: Metadata = {
   title: "Admin dashboard",
   description: "Platform statistics and audit trail.",
 };
 
-async function fetchAdminStats() {
-  const res = await fetch("/api/admin/stats", { cache: "no-store" });
-  if (!res.ok) return { totals: {}, recentUsers: [], recentAudit: [] };
-  const data = await res.json();
-  return data.data ?? { totals: {}, recentUsers: [], recentAudit: [] };
-}
+const EMPTY_STATS: AdminStats = {
+  totals: { users: 0, products: 0, services: 0, searches: 0, favorites: 0, bookings: 0, reviews: 0 },
+  roles: [],
+  recentSearches: [],
+  recentAudit: [],
+  recentUsers: [],
+};
 
 export default async function AdminPage() {
   const user = await getCurrentUser();
@@ -23,7 +24,12 @@ export default async function AdminPage() {
     return notAuthorized();
   }
 
-  const stats = await fetchAdminStats();
+  let stats: AdminStats;
+  try {
+    stats = await getAdminStats();
+  } catch {
+    stats = EMPTY_STATS;
+  }
 
   return (
     <div className="space-y-6">

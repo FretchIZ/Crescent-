@@ -17,6 +17,14 @@ export function parseJson<T>(value: string | null | undefined, fallback: T, guar
   }
 }
 
+/** Only allow same-origin absolute paths as post-auth redirect targets. */
+export function safeRedirectPath(value: string | undefined | null, fallback = "/"): string {
+  if (!value) return fallback;
+  if (!value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) return fallback;
+  if (/[\r\n]/.test(value)) return fallback;
+  return value;
+}
+
 export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === "string");
 }

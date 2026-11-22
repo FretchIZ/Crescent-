@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { ChevronRight, Mail, ShieldCheck, User } from "lucide-react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
 import { Field, Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getCurrentUser } from "@/lib/auth/session";
@@ -32,9 +31,8 @@ export default async function ProfilePage() {
   }
 
   const { db } = await import("@/lib/db");
-  const [profile, favoritesCount, bookingsCount, interestsCount] =
+  const [favoritesCount, bookingsCount, interestsCount] =
     await Promise.all([
-      db.userProfile.findUnique({ where: { userId: user.id } }),
       db.favorite.count({ where: { userId: user.id } }),
       db.booking.count({ where: { userId: user.id } }),
       db.interest.count({ where: { userId: user.id } }),

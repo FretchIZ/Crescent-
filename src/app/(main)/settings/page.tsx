@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
-import { ChevronRight, Mail, ShieldCheck, Sparkles, User } from "lucide-react";
+import { ChevronRight, Sparkles, User } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Field, Input, Select } from "@/components/ui/input";
+import { Field, Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ResendVerificationButton } from "@/components/resend-verification-button";
 import { getCurrentUser } from "@/lib/auth/session";
 
 export const metadata: Metadata = {
@@ -46,9 +47,9 @@ export default async function SettingsPage() {
         </aside>
 
         <main className="space-y-6">
-          <PreferencesForm user={user} />
+          <PreferencesForm />
           <AccountSecurity user={user} />
-          <DataControls user={user} />
+          <DataControls />
         </main>
       </div>
     </div>
@@ -83,7 +84,7 @@ function SettingsNav({ active }: { active: string }) {
   );
 }
 
-function PreferencesForm({ user }: { user: any }) {
+function PreferencesForm() {
   return (
     <section className="surface p-5">
       <h2 className="text-lg font-semibold mb-4">Search preferences</h2>
@@ -155,7 +156,7 @@ function AccountSecurity({ user }: { user: any }) {
         </Field>
         <Field label="Password">
           <Input type="password" placeholder="••••••••" disabled className="bg-canvas text-ink" />
-          <Link href="/settings/password" className="inline-block text-xs font-semibold text-accent-ink hover:underline">
+          <Link href="/forgot-password" className="inline-block text-xs font-semibold text-accent-ink hover:underline">
             Change password
           </Link>
         </Field>
@@ -164,11 +165,7 @@ function AccountSecurity({ user }: { user: any }) {
             <span className="text-sm">
               {user.emailVerified ? "Verified" : "Not verified"}
             </span>
-            {!user.emailVerified ? (
-              <Link href="/settings/verify" className="inline-flex items-center gap-1 text-xs font-semibold text-accent-ink hover:underline">
-                Resend verification <ChevronRight className="h-3 w-3" />
-              </Link>
-            ) : null}
+            {!user.emailVerified ? <ResendVerificationButton /> : null}
           </div>
           <p className="mt-1 text-[11px] text-muted">
             A verified email helps secure your account and enables password recovery.
@@ -179,7 +176,7 @@ function AccountSecurity({ user }: { user: any }) {
   );
 }
 
-function DataControls({ user }: { user: any }) {
+function DataControls() {
   return (
     <section className="surface p-5">
       <h2 className="text-lg font-semibold mb-4">Data &amp; privacy</h2>

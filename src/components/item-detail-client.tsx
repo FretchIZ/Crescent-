@@ -32,7 +32,6 @@ export function ItemDetailClient({
 }: ItemDetailClientProps) {
   const [reviews, setReviews] = useState<Array<{ id: string; rating: number; title: string | null; body: string | null; verifiedPurchase: boolean; createdAt: string; author: string }>>([]);
   const [related, setRelated] = useState<ItemCardData[]>([]);
-  const [busy, setBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<"details" | "reviews" | "specs">("details");
   const [galleryIndex, setGalleryIndex] = useState(0);
 

@@ -1,4 +1,4 @@
-import { apiHandler, jsonOk, readJson, ApiError } from "@/lib/api";
+import { apiHandler, jsonOk, readJson } from "@/lib/api";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth/session";
 import { z } from "zod";

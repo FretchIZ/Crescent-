@@ -5,10 +5,13 @@ import { db } from "@/lib/db";
 import { env, isProduction } from "@/lib/env";
 import { ApiError } from "@/lib/api";
 import { isRole, type Role } from "@/lib/constants";
+import { kvDel, kvGet, kvSet } from "@/lib/kv";
 
 export const SESSION_COOKIE = "bm_session";
 export const VISITOR_COOKIE = "bm_visitor";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const SESSION_CACHE_TTL_SEC = 60;
+const REVOCATION_TTL_SEC = 60 * 60 * 24 * 31;
 
 export function randomToken(bytes = 32): string {
   return randomBytes(bytes).toString("base64url");
@@ -45,17 +48,33 @@ const SESSION_SELECT = {
   createdAt: true,
 } as const;
 
+type CachedUser = Omit<SessionUser, "createdAt"> & { createdAt: string };
+
+type CachedSession = {
+  sessionId: string;
+  createdAt: string;
+  expiresAt: string;
+  user: CachedUser;
+};
+
+// Cache keys only ever contain hashes or opaque IDs — never the raw cookie.
+const cacheKey = (tokenHash: string) => `session:cache:${tokenHash}`;
+const revokeKey = (tokenHash: string) => `session:revoke:${tokenHash}`;
+const userRevokeKey = (userId: string) => `session:urevoke:${userId}`;
+
 export async function createSession(userId: string, userAgent?: string | null, ip?: string | null) {
   const token = randomToken();
+  const tokenHash = sha256(token);
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-  await db.session.create({
+  const session = await db.session.create({
     data: {
       userId,
-      tokenHash: sha256(token),
+      tokenHash,
       userAgent: userAgent?.slice(0, 250) ?? null,
       ipHash: ip ? hashIp(ip) : null,
       expiresAt,
     },
+    select: { id: true, createdAt: true },
   });
 
   const store = await cookies();
@@ -66,6 +85,21 @@ export async function createSession(userId: string, userAgent?: string | null, i
     path: "/",
     expires: expiresAt,
   });
+
+  // Seed the cache at login so the next request never needs a DB lookup.
+  const profile = await db.user.findUnique({ where: { id: userId }, select: SESSION_SELECT });
+  if (profile && isRole(profile.role)) {
+    await kvSet(
+      cacheKey(tokenHash),
+      JSON.stringify({
+        sessionId: session.id,
+        createdAt: session.createdAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+        user: { ...profile, role: profile.role, createdAt: profile.createdAt.toISOString() },
+      } satisfies CachedSession),
+      SESSION_CACHE_TTL_SEC
+    );
+  }
   return { token, expiresAt };
 }
 
@@ -75,9 +109,35 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;
 
+  const tokenHash = sha256(token);
+  const [revoked, cachedRaw] = await Promise.all([kvGet(revokeKey(tokenHash)), kvGet(cacheKey(tokenHash))]);
+
+  if (revoked) return null;
+
+  if (cachedRaw) {
+    try {
+      const cached = JSON.parse(cachedRaw) as CachedSession;
+      const userRevokedAt = await kvGet(userRevokeKey(cached.user.id));
+      const notRevoked =
+        !userRevokedAt ||
+        Number.isNaN(Date.parse(userRevokedAt)) ||
+        new Date(userRevokedAt).getTime() < Date.parse(cached.createdAt);
+      if (
+        notRevoked &&
+        Date.parse(cached.expiresAt) > Date.now() &&
+        isRole(cached.user.role)
+      ) {
+        return { ...cached.user, role: cached.user.role, createdAt: new Date(cached.user.createdAt) };
+      }
+    } catch {
+      // Corrupt cache entry: fall through to the authoritative database.
+    }
+    await kvDel(cacheKey(tokenHash));
+  }
+
   const session = await db.session.findUnique({
-    where: { tokenHash: sha256(token) },
-    select: { id: true, expiresAt: true, user: { select: SESSION_SELECT } },
+    where: { tokenHash },
+    select: { id: true, expiresAt: true, createdAt: true, userId: true, user: { select: SESSION_SELECT } },
   });
   if (!session) return null;
   if (session.expiresAt.getTime() <= Date.now()) {
@@ -86,14 +146,38 @@ export const getCurrentUser = cache(async (): Promise<SessionUser | null> => {
   }
   const role = session.user.role;
   if (!isRole(role)) return null;
-  return { ...session.user, role };
+
+  const user: SessionUser = { ...session.user, role };
+  const userRevokedAt = await kvGet(userRevokeKey(user.id));
+  if (userRevokedAt && !Number.isNaN(Date.parse(userRevokedAt)) && Date.parse(userRevokedAt) >= session.createdAt.getTime()) {
+    return null;
+  }
+
+  await kvSet(
+    cacheKey(tokenHash),
+    JSON.stringify({
+      sessionId: session.id,
+      createdAt: session.createdAt.toISOString(),
+      expiresAt: session.expiresAt.toISOString(),
+      user: { ...user, createdAt: user.createdAt.toISOString() },
+    } satisfies CachedSession),
+    SESSION_CACHE_TTL_SEC
+  );
+  return user;
 });
 
 export async function destroyCurrentSession() {
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (token) {
-    await db.session.deleteMany({ where: { tokenHash: sha256(token) } });
+    const tokenHash = sha256(token);
+    await Promise.all([
+      db.session.deleteMany({ where: { tokenHash } }),
+      // Revocation is checked before the cache, so logout is immediate even
+      // when another instance still holds the cached session payload.
+      kvSet(revokeKey(tokenHash), "1", REVOCATION_TTL_SEC),
+      kvDel(cacheKey(tokenHash)),
+    ]);
   }
   store.set(SESSION_COOKIE, "", {
     httpOnly: true,
@@ -104,8 +188,12 @@ export async function destroyCurrentSession() {
   });
 }
 
+/** Delete every DB session and invalidate all cached sessions for a user. */
 export async function revokeAllSessions(userId: string) {
-  await db.session.deleteMany({ where: { userId } });
+  await Promise.all([
+    db.session.deleteMany({ where: { userId } }),
+    kvSet(userRevokeKey(userId), String(Date.now()), REVOCATION_TTL_SEC),
+  ]);
 }
 
 export async function requireUser(): Promise<SessionUser> {

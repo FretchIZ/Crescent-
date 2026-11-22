@@ -19,3 +19,10 @@ vendor/
 Thumbs.db
 next-env.d.ts
 *.tsbuildinfo
+# Build artifacts and test output
+vitest-out.txt
+build-out.txt
+lint-out.txt
+# Local SQLite for development/test only — production uses PostgreSQL via DATABASE_URL
+**/*.db
+**/*.db-journal

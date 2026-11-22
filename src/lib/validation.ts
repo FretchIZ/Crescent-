@@ -103,6 +103,8 @@ export const bookingSchema = z.object({
     message: "Choose a time within the next year",
   }),
   notes: z.string().trim().max(500).optional().or(z.literal("")),
+  // Optional idempotency key; the Idempotency-Key header is preferred.
+  idempotencyKey: z.string().trim().min(8).max(100).regex(/^[A-Za-z0-9._:-]+$/).optional(),
 });
 
 export const bookingActionSchema = z.object({

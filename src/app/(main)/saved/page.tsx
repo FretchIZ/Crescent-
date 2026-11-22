@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ChevronRight, Clock, PackageSearch } from "lucide-react";
+import { ChevronRight, PackageSearch } from "lucide-react";
 import { ItemCard, type ItemCardData } from "@/components/item-card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getCurrentUser } from "@/lib/auth/session";
-import { getFavoriteKeySet, getItemBySlugOrId, toPublicItem, type CatalogItem } from "@/lib/items";
+import { getItemBySlugOrId, toPublicItem, type CatalogItem } from "@/lib/items";
 
 function toCard(item: CatalogItem, favorites: Set<string>): ItemCardData {
   const publicItem = toPublicItem(item, favorites.has(`${item.type}:${item.id}`));

@@ -4,11 +4,11 @@ import { registerSchema } from "@/lib/validation";
 import { hashPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
 import { issueEmailVerification } from "@/lib/auth/tokens";
-import { enforceRateLimit } from "@/lib/rate-limit";
+import { enforceRateLimit, hashRateKey } from "@/lib/rate-limit";
 import { audit } from "@/lib/audit";
 
 export const POST = apiHandler(async (request) => {
-  enforceRateLimit(`register:${clientIp(request)}`, 8, 60 * 60 * 1000);
+  await enforceRateLimit(`register:${hashRateKey(clientIp(request) ?? "unknown")}`, 8, 60 * 60 * 1000);
   const body = await readJson(request, registerSchema);
 
   const existing = await db.user.findUnique({ where: { email: body.email }, select: { id: true } });

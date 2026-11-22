@@ -20,6 +20,10 @@ generator client {
 }
 
 datasource db {
+  // Provider is "sqlite" for local development (zero config).
+  // For production on Vercel + managed PostgreSQL, change to "postgresql":
+  //   provider = "postgresql"
+  // and set DATABASE_URL to your PostgreSQL connection string.
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
@@ -240,6 +244,8 @@ model Booking {
   status      String   @default("PENDING") // PENDING | CONFIRMED | CANCELLED | COMPLETED
   preferredAt DateTime
   notes       String?
+  // Client-supplied key makes concurrent booking retries idempotent.
+  idempotencyKey String? @unique
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

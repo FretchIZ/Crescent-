@@ -1,5 +1,4 @@
 import { vi } from "vitest";
-import { cookies } from "next/headers";
 
 // Test environment configuration — must run before app modules load
 ;(process.env as Record<string, string>).DATABASE_URL = "file:./prisma/test.db";
